@@ -3,7 +3,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -17,7 +16,6 @@ class _LoginScreenState extends State<LoginPage> {
   final _acct = TextEditingController();
   final _pw = TextEditingController();
   var _obscurePassword = true;
-  var _error = "";
 
   @override
   void dispose() {
@@ -47,11 +45,9 @@ class _LoginScreenState extends State<LoginPage> {
         Navigator.push(context, MaterialPageRoute(builder: (context) => HomePage()));
       } else {
         print("Faild login");
-        _error = 'Login failed:';
       }
     } catch (e) {
       print(e.toString());
-      _error = e.toString();
     }
     setState(() {});
   }
