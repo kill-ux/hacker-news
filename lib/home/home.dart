@@ -28,7 +28,7 @@ class _HomePageState extends State<HomePage> {
     // _checkLoginAndLoadStories();
   }
 
-  Future<void> _checkLoginAndLoadStories() async {
+  Future<String> _checkLoginAndLoadStories() async {
     var prefs = await SharedPreferences.getInstance();
     isLoggedIn = prefs.getBool("is_logged_in") ?? false;
     if (mounted) {
@@ -38,13 +38,17 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (isLoggedIn) {
-      // do actions
+      var rawCookie = prefs.getString('hn_session');
+      if (rawCookie != null) {
+        return rawCookie.split(';').first;
+      }
     } else {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => LoginPage()),
       );
     }
+    return '';
   }
 
   Future<void> _loadStories() async {
@@ -103,22 +107,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _vote(Story story, String action) async {
-    _checkLoginAndLoadStories();
+    String session = await _checkLoginAndLoadStories();
     if (!isLoggedIn) return;
-
-    var prefs = await SharedPreferences.getInstance();
 
     print("hhhhhh");
     try {
       final url = Uri.parse(
         "https://news.ycombinator.com/vote?id=${story.id}&how=$action&js=t",
       );
-      String session = prefs.getString('hn_sessio')!;
       print(session);
-      var res = await http.get(
-        url,
-        headers: {'Cookie': session},
-      );
+      var res = await http.get(url, headers: {'Cookie': session});
       if (res.statusCode == 200) {
         print(res.headers['location']);
       }
