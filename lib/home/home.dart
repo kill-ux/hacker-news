@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:hacker_news/auth/login_page.dart';
+import 'package:hacker_news/home/story_details.dart';
 import 'package:hacker_news/home/webview.dart';
 import 'package:hacker_news/models/story.dart';
 
@@ -17,6 +18,11 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<Story> stories = [];
+  List<dynamic> storyIds = [];
+  int loadOffset = 20;
+  bool hasMore = true;
+  bool isLoadingMore = false;
+  bool apiLoaded = false;
 
   final _baseUrl = "https://news.ycombinator.com";
   // List<dynamic> storyIds = [];
@@ -26,6 +32,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+
     _loadStories();
     // _checkLoginAndLoadStories();
   }
@@ -53,7 +60,7 @@ class _HomePageState extends State<HomePage> {
     return '';
   }
 
-  Future<void> _loadStories() async {
+  Future<void> _loadStories44() async {
     try {
       setState(() {
         isLoading = true;
@@ -65,7 +72,7 @@ class _HomePageState extends State<HomePage> {
       print(res.statusCode);
       if (res.statusCode == 200) {
         // storyIds = json.decode(res.body);
-        List<dynamic> storyIds = json.decode(res.body);
+        storyIds = json.decode(res.body);
         List<Future<Story>> storyFutures = storyIds
             .take(20)
             .map((id) async => await _getStorie(id))
@@ -81,8 +88,67 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _loadStories({bool loadMore = false}) async {
+    try {
+      if (loadMore) {
+        setState(() => isLoadingMore = true);
+      } else {
+        setState(() => isLoading = true);
+      }
+
+      // API CALL ONLY ON FIRST LOAD (not loadMore)
+      if (!apiLoaded) {
+        final url = Uri.parse(
+          'https://hacker-news.firebaseio.com/v0/newstories.json',
+        );
+        var res = await http.get(url);
+
+        if (res.statusCode == 200) {
+          storyIds = json.decode(res.body); // Load ONCE
+          apiLoaded = true;
+        }
+      }
+
+      // Take next 20 from cached storyIds
+      final batchSize = 20;
+      final startIndex = loadMore ? (stories.length) : 0;
+      final endIndex = (startIndex + batchSize) > storyIds.length
+          ? storyIds.length
+          : startIndex + batchSize;
+
+      List<Future<Story>> storyFutures = storyIds
+          .sublist(startIndex, endIndex)
+          .map((id) async => await _getStorie(id as int))
+          .toList();
+
+      final newStories = await Future.wait(storyFutures);
+
+      setState(() {
+        if (loadMore) {
+          stories.addAll(newStories);
+        } else {
+          stories = newStories;
+        }
+        hasMore = endIndex < storyIds.length;
+        isLoading = false;
+        isLoadingMore = false;
+      });
+
+      print(
+        "Loaded ${newStories.length}, total ${stories.length}/${storyIds.length}",
+      );
+    } catch (e) {
+      print(e.toString());
+      setState(() {
+        isLoading = false;
+        isLoadingMore = false;
+      });
+    }
+  }
+
   Future<Story> _getStorie(int id) async {
     var def = Story.def(id);
+    print("get st");
     try {
       final url = Uri.parse(
         'https://hacker-news.firebaseio.com/v0/item/$id.json',
@@ -98,23 +164,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _launchUrl(Story story) {
-    // if (story.url.isNotEmpty) {
-    //   Navigator.push(
-    //     context,
-    //     MaterialPageRoute(builder: (context) => WebViewPage(story.url)),
-    //   );
-    // }
-    // var url =
-  }
-
-  Future<String?> _getCsrfToken(int storyId, String action) async {
+  Future<String?> _getCsrfToken(
+    int storyId,
+    String action,
+    String session,
+  ) async {
     try {
       final url = Uri.parse('https://news.ycombinator.com/item?id=$storyId');
-      final res = await http.get(url);
+      final res = await http.get(url, headers: {'Cookie': session});
 
       if (res.statusCode == 200) {
-        print(url);
         final body = res.body;
         final regExp = RegExp('id=$storyId[^>]*auth=([a-z0-9]+)');
         final match = regExp.firstMatch(res.body);
@@ -129,6 +188,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _vote(Story story, String action) async {
     final session = await _checkLoginAndLoadStories();
+    print(isLoggedIn);
     if (!isLoggedIn || session.isEmpty) {
       ScaffoldMessenger.of(
         context,
@@ -137,37 +197,22 @@ class _HomePageState extends State<HomePage> {
     }
 
     // 1. Get fresh CSRF token
-    final token = await _getCsrfToken(story.id, action);
+    final token = await _getCsrfToken(story.id, action, session);
     if (token == null) {
       print('Failed to get CSRF token');
       return;
     }
 
-    print('Voting $action on ${story.id} | Token: $token');
-
     try {
       final url = Uri.parse(
-        "$_baseUrl/vote?id=${story.id}&how=up&auth=$token&goto=news",
+        "$_baseUrl/vote?id=${story.id}&how=$action&auth=$token&goto=news",
       );
-      // final url = Uri.parse(
-      //   '/vote?id=${story.id}&how=$action&auth=$token&goto=news',
-      // );
-
-      print("session :");
-      print(session);
 
       final res = await http.get(url, headers: {'Cookie': session});
 
-      print(url);
-
-      print(
-        'Vote response: ${res.statusCode} | Location: ${res.headers['location']}',
-      );
-
       if (res.statusCode == 302 || res.statusCode == 200) {
-        // Success! HN redirects on valid vote
         setState(() {
-          story.score += action == 'up' ? 1 : -1; // Optimistic UI update
+          story.score += action == 'up' ? 1 : -1;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${action.toUpperCase()}d ${story.title}')),
@@ -192,6 +237,7 @@ class _HomePageState extends State<HomePage> {
       builder: (context) {
         final titleController = TextEditingController();
         final urlController = TextEditingController();
+        final textController = TextEditingController();
 
         return AlertDialog(
           title: const Text('Submit to HN'),
@@ -211,6 +257,12 @@ class _HomePageState extends State<HomePage> {
                   hintText: 'https://example.com',
                 ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textController,
+                decoration: const InputDecoration(labelText: 'Text'),
+                maxLines: 2,
+              ),
             ],
           ),
           actions: [
@@ -222,6 +274,7 @@ class _HomePageState extends State<HomePage> {
               onPressed: () => Navigator.pop(context, {
                 'title': titleController.text,
                 'url': urlController.text,
+                'text': textController.text,
               }),
               child: const Text('Submit'),
             ),
@@ -231,42 +284,46 @@ class _HomePageState extends State<HomePage> {
     );
 
     if (result != null) {
-      await _submitPost(result['title']!, result['url']!, session);
+      await _submitPost(
+        result['title']!,
+        result['url']!,
+        result['text']!,
+        session,
+      );
     }
   }
 
-  Future<void> _submitPost(String title, String? url, String session) async {
+  Future<void> _submitPost(
+    String title,
+    String? url,
+    String text,
+    String session,
+  ) async {
     try {
       // Get submit page + CSRF token first
-      final submitRes = await http.get(
-        Uri.parse('https://news.ycombinator.com/submitlink.html'),
+      final res = await http.get(
+        Uri.parse('https://news.ycombinator.com/submit'),
         headers: {'Cookie': session},
       );
 
-      if (submitRes.statusCode != 200) {
+      if (res.statusCode != 200) {
         throw Exception('Failed to load submit page');
       }
 
-      // Extract CSRF token (hn_csrf or auth param)
-      final csrfMatch =
-          RegExp(
-            r'name="hn_csrf" value="([a-zA-Z0-9+/=]{44})"',
-          ).firstMatch(submitRes.body) ??
-          RegExp(r'auth=([a-f0-9]{40})').firstMatch(submitRes.body);
+      final regExp = RegExp(r'name="fnid" value="([^"]+)"');
+      final match = regExp.firstMatch(res.body);
 
-      final csrfToken = csrfMatch?.group(1);
-      if (csrfToken == null) {
-        throw Exception('No CSRF token found');
-      }
+      if (match == null) return; // Could not find security token
+      final String fnid = match.group(1)!;
 
-      print('CSRF Token: $csrfToken');
+      print('CSRF Token: $fnid');
 
       // POST to submit
       final formData = {
         'title': title,
         'url': url ?? '',
-        'hncsfrt': csrfToken, // CSRF field
-        'do': 'sub:submitlink',
+        'fnid': fnid, // CSRF field
+        'text': text ?? '',
       };
 
       final postRes = await http.post(
@@ -299,6 +356,245 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Clear session data
+    await prefs.remove('hn_session');
+    await prefs.setBool('is_logged_in', false);
+
+    setState(() {
+      isLoggedIn = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Logged out successfully'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => LoginPage()),
+    );
+
+    print('👋 Logged out');
+  }
+
+  Future<void> _loadMoreStories() async => _loadStories(loadMore: true);
+
+  // @override
+  // Widget build(BuildContext context) => Scaffold(
+  //   backgroundColor: Colors.grey[900],
+  //   appBar: AppBar(
+  //     title: const Text(
+  //       'Hacker News',
+  //       style: TextStyle(fontWeight: FontWeight.bold),
+  //     ),
+
+  //     backgroundColor: Colors.grey[850],
+  //     foregroundColor: Colors.white,
+  //     elevation: 0,
+  //     actions: [
+  //       IconButton(
+  //         icon: const Icon(Icons.refresh),
+  //         onPressed: isLoading ? null : _loadStories,
+  //       ),
+  //       IconButton(
+  //         icon: const Icon(Icons.post_add),
+  //         onPressed: _showSubmitDialog,
+  //       ),
+  //       // if (isLoggedIn)
+  //       IconButton(
+  //         icon: const Icon(Icons.logout, color: Colors.red),
+  //         onPressed: _logout,
+  //       ),
+  //     ],
+  //   ),
+  //   body: isLoading
+  //       ? const Center(
+  //           child: Column(
+  //             mainAxisAlignment: MainAxisAlignment.center,
+  //             children: [
+  //               CircularProgressIndicator(color: Colors.orange),
+  //               SizedBox(height: 16),
+  //               Text(
+  //                 'Loading stories...',
+  //                 style: TextStyle(color: Colors.white70),
+  //               ),
+  //             ],
+  //           ),
+  //         )
+  //       : stories.isEmpty
+  //       ? Center(
+  //           child: Column(
+  //             mainAxisAlignment: MainAxisAlignment.center,
+  //             children: [
+  //               Icon(
+  //                 Icons.newspaper_outlined,
+  //                 size: 64,
+  //                 color: Colors.grey[600],
+  //               ),
+  //               const SizedBox(height: 16),
+  //               Text(
+  //                 "No stories loaded",
+  //                 style: TextStyle(color: Colors.white70, fontSize: 18),
+  //               ),
+  //               const SizedBox(height: 8),
+  //               ElevatedButton.icon(
+  //                 onPressed: _loadStories,
+  //                 icon: const Icon(Icons.refresh),
+  //                 label: const Text('Retry'),
+  //                 style: ElevatedButton.styleFrom(
+  //                   backgroundColor: Colors.orange,
+  //                 ),
+  //               ),
+  //             ],
+  //           ),
+  //         )
+  //       : RefreshIndicator(
+  //           color: Colors.orange,
+  //           onRefresh: _loadStories,
+  //           child: ListView.builder(
+  //             padding: const EdgeInsets.all(12),
+  //             itemCount: stories.length,
+  //             itemBuilder: (context, index) {
+  //               final story = stories[index];
+  //               return Card(
+  //                 color: Colors.grey[850],
+  //                 margin: const EdgeInsets.only(bottom: 12),
+  //                 shape: RoundedRectangleBorder(
+  //                   borderRadius: BorderRadius.circular(12),
+  //                 ),
+  //                 child: InkWell(
+  //                   borderRadius: BorderRadius.circular(12),
+  //                   child: Padding(
+  //                     padding: const EdgeInsets.all(16),
+  //                     child: Column(
+  //                       crossAxisAlignment: CrossAxisAlignment.start,
+  //                       children: [
+  //                         Row(
+  //                           children: [
+  //                             IconButton(
+  //                               icon: Icon(
+  //                                 Icons.arrow_upward,
+  //                                 size: 20,
+  //                                 color: Colors.orange[400],
+  //                               ),
+  //                               onPressed: () =>
+  //                                   _vote(story, 'up'), // Works 100%
+  //                               padding: EdgeInsets.zero,
+  //                               constraints: const BoxConstraints(),
+  //                             ),
+
+  //                             const SizedBox(width: 8),
+  //                             Text(
+  //                               '${story.score}',
+  //                               style: const TextStyle(
+  //                                 fontWeight: FontWeight.bold,
+  //                                 color: Colors.white,
+  //                               ),
+  //                             ),
+  //                             const SizedBox(
+  //                               width: 12,
+  //                             ), // Reduced from 16 to prevent overflow
+  //                             Expanded(
+  //                               // Wrap title in Expanded to prevent overflow
+  //                               child: Column(
+  //                                 crossAxisAlignment: CrossAxisAlignment.start,
+  //                                 children: [
+  //                                   InkWell(
+  //                                     onTap: () => Navigator.push(
+  //                                       context,
+  //                                       MaterialPageRoute(
+  //                                         builder: (context) =>
+  //                                             StoryDetailsScreen(story: story),
+  //                                       ),
+  //                                     ),
+  //                                     child: Text(
+  //                                       story.title,
+  //                                       style: const TextStyle(
+  //                                         fontSize: 16,
+  //                                         height: 1.3,
+  //                                       ),
+  //                                       maxLines: 2, // Limit lines
+  //                                       overflow: TextOverflow
+  //                                           .ellipsis, // Add "..." for long titles
+  //                                     ),
+  //                                   ),
+
+  //                                   if (story.url.isNotEmpty) ...[
+  //                                     const SizedBox(height: 4),
+  //                                     GestureDetector(
+  //                                       onTap: () => Navigator.push(
+  //                                         context,
+  //                                         MaterialPageRoute(
+  //                                           builder: (context) =>
+  //                                               WebViewPage(story.url),
+  //                                         ),
+  //                                       ),
+  //                                       child: Text(
+  //                                         "(${story.url})",
+  //                                         style: TextStyle(
+  //                                           fontSize: 12,
+  //                                           color: Colors.grey[400],
+  //                                         ),
+  //                                         maxLines: 1,
+  //                                         overflow: TextOverflow.ellipsis,
+  //                                       ),
+  //                                     ),
+  //                                   ],
+  //                                 ],
+  //                               ),
+  //                             ),
+  //                           ],
+  //                         ),
+  //                         const SizedBox(height: 12),
+  //                         Row(
+  //                           children: [
+  //                             CircleAvatar(
+  //                               radius: 12,
+  //                               backgroundColor: Colors.orange[700],
+  //                               child: Text(
+  //                                 story.by.isNotEmpty
+  //                                     ? story.by.substring(0, 1).toUpperCase()
+  //                                     : '?',
+  //                                 style: const TextStyle(
+  //                                   fontSize: 12,
+  //                                   color: Colors.white,
+  //                                 ),
+  //                               ),
+  //                             ),
+  //                             const SizedBox(width: 8),
+  //                             Expanded(
+  //                               child: Text(
+  //                                 '${story.by} • ${story.score} points • ${story.descendants} comments',
+  //                                 style: TextStyle(
+  //                                   color: Colors.grey[400],
+  //                                   fontSize: 14,
+  //                                 ),
+  //                               ),
+  //                             ),
+  //                             if (story.url.isNotEmpty)
+  //                               Icon(
+  //                                 Icons.launch,
+  //                                 size: 18,
+  //                                 color: Colors.grey[400],
+  //                               ),
+  //                           ],
+  //                         ),
+  //                       ],
+  //                     ),
+  //                   ),
+  //                 ),
+  //               );
+  //             },
+  //           ),
+  //         ),
+  // );
+
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.grey[900],
@@ -307,191 +603,254 @@ class _HomePageState extends State<HomePage> {
         'Hacker News',
         style: TextStyle(fontWeight: FontWeight.bold),
       ),
-
       backgroundColor: Colors.grey[850],
       foregroundColor: Colors.white,
       elevation: 0,
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh),
-          onPressed: isLoading ? null : _loadStories,
+          onPressed: isLoading ? null : () => _loadStories(loadMore: false),
         ),
         IconButton(
           icon: const Icon(Icons.post_add),
           onPressed: _showSubmitDialog,
         ),
+        IconButton(
+          icon: const Icon(Icons.logout, color: Colors.red),
+          onPressed: _logout,
+        ),
       ],
     ),
-    body: isLoading
-        ? const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircularProgressIndicator(color: Colors.orange),
-                SizedBox(height: 16),
-                Text(
-                  'Loading stories...',
-                  style: TextStyle(color: Colors.white70),
-                ),
-              ],
-            ),
-          )
-        : stories.isEmpty
-        ? Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.newspaper_outlined,
-                  size: 64,
-                  color: Colors.grey[600],
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  "No stories loaded",
-                  style: TextStyle(color: Colors.white70, fontSize: 18),
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  onPressed: _loadStories,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Retry'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
+    body: Column(
+      children: [
+        // ListView (Expanded)
+        Expanded(
+          child: isLoading && stories.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(color: Colors.orange),
+                      SizedBox(height: 16),
+                      Text(
+                        'Loading stories...',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-          )
-        : RefreshIndicator(
-            color: Colors.orange,
-            onRefresh: _loadStories,
-            child: ListView.builder(
-              padding: const EdgeInsets.all(12),
-              itemCount: stories.length,
-              itemBuilder: (context, index) {
-                final story = stories[index];
-                return Card(
-                  color: Colors.grey[850],
-                  margin: const EdgeInsets.only(bottom: 12),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                )
+              : stories.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.newspaper_outlined,
+                        size: 64,
+                        color: Colors.grey[600],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        "No stories loaded",
+                        style: TextStyle(color: Colors.white70, fontSize: 18),
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        onPressed: _loadStories,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Retry'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                        ),
+                      ),
+                    ],
                   ),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: story.url.isNotEmpty
-                        ? () => _launchUrl(story)
-                        : null,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  Icons.arrow_upward,
-                                  size: 20,
-                                  color: Colors.orange[400],
-                                ),
-                                onPressed: () =>
-                                    _vote(story, 'up'), // Works 100%
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                              ),
-
-                              const SizedBox(width: 8),
-                              Text(
-                                '${story.score}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              const SizedBox(
-                                width: 12,
-                              ), // Reduced from 16 to prevent overflow
-                              Expanded(
-                                // Wrap title in Expanded to prevent overflow
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                )
+              : RefreshIndicator(
+                  color: Colors.orange,
+                  onRefresh: () => _loadStories(loadMore: false),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: stories.length,
+                    itemBuilder: (context, index) {
+                      final story = stories[index];
+                      return Card(
+                        color: Colors.grey[850],
+                        margin: const EdgeInsets.only(bottom: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
                                   children: [
-                                    Text(
-                                      story.title,
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        height: 1.3,
-                                      ),
-                                      maxLines: 2, // Limit lines
-                                      overflow: TextOverflow
-                                          .ellipsis, // Add "..." for long titles
+                                    Column(
+                                      children: [
+                                        IconButton(
+                                          icon: Icon(
+                                            Icons.keyboard_arrow_up,
+                                            size: 35,
+                                            color: Colors.orange[400],
+                                          ),
+                                          onPressed: () => _vote(story, 'up'),
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                        ),
+                                        Text(
+                                          '${story.score}',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: Icon(
+                                            Icons.keyboard_arrow_down,
+                                            size: 35,
+                                            color: Colors.orange[400],
+                                          ),
+                                          onPressed: () => _vote(story, 'un'),
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                        ),
+                                      ],
                                     ),
-                                    if (story.url.isNotEmpty) ...[
-                                      const SizedBox(height: 4),
-                                      GestureDetector(
-                                        onTap: () => Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (context) =>
-                                                WebViewPage(story.url),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          InkWell(
+                                            onTap: () => Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (context) =>
+                                                    StoryDetailsScreen(
+                                                      story: story,
+                                                    ),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              story.title,
+                                              style: const TextStyle(
+                                                fontSize: 16,
+                                                height: 1.3,
+                                              ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
                                           ),
-                                        ),
-                                        child: Text(
-                                          "(${story.url})",
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey[400],
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
+                                          if (story.url.isNotEmpty) ...[
+                                            const SizedBox(height: 4),
+                                            GestureDetector(
+                                              onTap: () => Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) =>
+                                                      WebViewPage(story.url),
+                                                ),
+                                              ),
+                                              child: Text(
+                                                "(${story.url})",
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.grey[400],
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
                                       ),
-                                    ],
+                                    ),
                                   ],
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 12,
+                                      backgroundColor: Colors.orange[700],
+                                      child: Text(
+                                        story.by.isNotEmpty
+                                            ? story.by
+                                                  .substring(0, 1)
+                                                  .toUpperCase()
+                                            : '?',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        '${story.by} • ${story.score} points • ${story.descendants} comments',
+                                        style: TextStyle(
+                                          color: Colors.grey[400],
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                    if (story.url.isNotEmpty)
+                                      Icon(
+                                        Icons.launch,
+                                        size: 18,
+                                        color: Colors.grey[400],
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              CircleAvatar(
-                                radius: 12,
-                                backgroundColor: Colors.orange[700],
-                                child: Text(
-                                  story.by.substring(0, 1).toUpperCase(),
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '${story.by} • ${story.score} points • ${story.descendants} comments',
-                                  style: TextStyle(
-                                    color: Colors.grey[400],
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ),
-                              if (story.url.isNotEmpty)
-                                Icon(
-                                  Icons.launch,
-                                  size: 18,
-                                  color: Colors.grey[400],
-                                ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
+                ),
+        ),
+
+        // 🔥 LOAD MORE BUTTON
+        if (hasMore)
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.grey[850],
+            child: Center(
+              child: ElevatedButton.icon(
+                onPressed: isLoadingMore
+                    ? null
+                    : () => _loadStories(loadMore: true),
+                icon: isLoadingMore
+                    ? SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.add),
+                label: Text(isLoadingMore ? 'Loading...' : 'Load More'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(200, 50),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25),
+                  ),
+                ),
+              ),
             ),
           ),
+      ],
+    ),
   );
 }
