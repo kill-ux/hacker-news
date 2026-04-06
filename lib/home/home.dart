@@ -17,6 +17,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<Story> stories = [];
+
+  final _baseUrl = "https://news.ycombinator.com";
   // List<dynamic> storyIds = [];
   bool isLoading = true;
   bool isLoggedIn = false;
@@ -106,22 +108,21 @@ class _HomePageState extends State<HomePage> {
     // var url =
   }
 
-  Future<String?> _getCsrfToken(int storyId) async {
+  Future<String?> _getCsrfToken(int storyId, String action) async {
     try {
       final url = Uri.parse('https://news.ycombinator.com/item?id=$storyId');
       final res = await http.get(url);
 
       if (res.statusCode == 200) {
+        print(url);
         final body = res.body;
-        print(body);
-        // Regex: auth=([a-f0-9]{40})
-        final match = RegExp(
-          r'"vote\?[^"]*auth=([a-f0-9]{40})',
-        ).firstMatch(body);
+        final regExp = RegExp('id=$storyId[^>]*auth=([a-z0-9]+)');
+        final match = regExp.firstMatch(res.body);
+
         return match?.group(1);
       }
     } catch (e) {
-      print('Token fetch error: $e');
+      print(e.toString());
     }
     return null;
   }
@@ -136,7 +137,7 @@ class _HomePageState extends State<HomePage> {
     }
 
     // 1. Get fresh CSRF token
-    final token = await _getCsrfToken(story.id);
+    final token = await _getCsrfToken(story.id, action);
     if (token == null) {
       print('Failed to get CSRF token');
       return;
@@ -146,19 +147,24 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final url = Uri.parse(
-        'https://news.ycombinator.com/vote?id=${story.id}&how=$action&auth=$token&goto=item?id=${story.id}',
+        "$_baseUrl/vote?id=${story.id}&how=up&auth=$token&goto=news",
       );
+      // final url = Uri.parse(
+      //   '/vote?id=${story.id}&how=$action&auth=$token&goto=news',
+      // );
 
-      final res = await http.get(
-        url,
-        headers: {'Cookie': session, 'User-Agent': 'HN-Flutter/1.0'},
-      );
+      print("session :");
+      print(session);
+
+      final res = await http.get(url, headers: {'Cookie': session});
+
+      print(url);
 
       print(
         'Vote response: ${res.statusCode} | Location: ${res.headers['location']}',
       );
 
-      if (res.statusCode == 302) {
+      if (res.statusCode == 302 || res.statusCode == 200) {
         // Success! HN redirects on valid vote
         setState(() {
           story.score += action == 'up' ? 1 : -1; // Optimistic UI update
@@ -172,6 +178,127 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _showSubmitDialog() async {
+    final session = await _checkLoginAndLoadStories();
+    if (!isLoggedIn || session.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Login required to submit')));
+      return;
+    }
+
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) {
+        final titleController = TextEditingController();
+        final urlController = TextEditingController();
+
+        return AlertDialog(
+          title: const Text('Submit to HN'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(labelText: 'Title'),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: 'URL (optional)',
+                  hintText: 'https://example.com',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, {
+                'title': titleController.text,
+                'url': urlController.text,
+              }),
+              child: const Text('Submit'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result != null) {
+      await _submitPost(result['title']!, result['url']!, session);
+    }
+  }
+
+  Future<void> _submitPost(String title, String? url, String session) async {
+    try {
+      // Get submit page + CSRF token first
+      final submitRes = await http.get(
+        Uri.parse('https://news.ycombinator.com/submitlink.html'),
+        headers: {'Cookie': session},
+      );
+
+      if (submitRes.statusCode != 200) {
+        throw Exception('Failed to load submit page');
+      }
+
+      // Extract CSRF token (hn_csrf or auth param)
+      final csrfMatch =
+          RegExp(
+            r'name="hn_csrf" value="([a-zA-Z0-9+/=]{44})"',
+          ).firstMatch(submitRes.body) ??
+          RegExp(r'auth=([a-f0-9]{40})').firstMatch(submitRes.body);
+
+      final csrfToken = csrfMatch?.group(1);
+      if (csrfToken == null) {
+        throw Exception('No CSRF token found');
+      }
+
+      print('CSRF Token: $csrfToken');
+
+      // POST to submit
+      final formData = {
+        'title': title,
+        'url': url ?? '',
+        'hncsfrt': csrfToken, // CSRF field
+        'do': 'sub:submitlink',
+      };
+
+      final postRes = await http.post(
+        Uri.parse('https://news.ycombinator.com/'),
+        headers: {
+          'Cookie': session,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData,
+        encoding: Encoding.getByName('utf-8'),
+      );
+
+      print('Submit status: ${postRes.statusCode}');
+      print('Location: ${postRes.headers['location']}');
+
+      if (postRes.statusCode == 302 || postRes.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Post submitted! Check HN for approval.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        _loadStories(); // Refresh list
+      }
+    } catch (e) {
+      print('Submit error: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Submit failed: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.grey[900],
@@ -180,6 +307,7 @@ class _HomePageState extends State<HomePage> {
         'Hacker News',
         style: TextStyle(fontWeight: FontWeight.bold),
       ),
+
       backgroundColor: Colors.grey[850],
       foregroundColor: Colors.white,
       elevation: 0,
@@ -187,6 +315,10 @@ class _HomePageState extends State<HomePage> {
         IconButton(
           icon: const Icon(Icons.refresh),
           onPressed: isLoading ? null : _loadStories,
+        ),
+        IconButton(
+          icon: const Icon(Icons.post_add),
+          onPressed: _showSubmitDialog,
         ),
       ],
     ),
