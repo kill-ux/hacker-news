@@ -1,15 +1,15 @@
 class Story {
-  final String by;
-  final int descendants;
-  final int id;
-  final List<dynamic> kids;
-  final int score;
-  final int time;
-  final String title;
-  final String type;
-  final String url;
+  String by;
+  int descendants;
+  int id;
+  List<dynamic> kids;
+  int score;
+  int time;
+  String title;
+  String type;
+  String url;
 
-  const Story._internal(
+  Story._internal(
     this.by,
     this.descendants,
     this.id,

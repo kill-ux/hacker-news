@@ -106,22 +106,69 @@ class _HomePageState extends State<HomePage> {
     // var url =
   }
 
-  Future<void> _vote(Story story, String action) async {
-    String session = await _checkLoginAndLoadStories();
-    if (!isLoggedIn) return;
-
-    print("hhhhhh");
+  Future<String?> _getCsrfToken(int storyId) async {
     try {
-      final url = Uri.parse(
-        "https://news.ycombinator.com/vote?id=${story.id}&how=$action&js=t",
-      );
-      print(session);
-      var res = await http.get(url, headers: {'Cookie': session});
+      final url = Uri.parse('https://news.ycombinator.com/item?id=$storyId');
+      final res = await http.get(url);
+
       if (res.statusCode == 200) {
-        print(res.headers['location']);
+        final body = res.body;
+        print(body);
+        // Regex: auth=([a-f0-9]{40})
+        final match = RegExp(
+          r'"vote\?[^"]*auth=([a-f0-9]{40})',
+        ).firstMatch(body);
+        return match?.group(1);
       }
     } catch (e) {
-      print(e.toString());
+      print('Token fetch error: $e');
+    }
+    return null;
+  }
+
+  Future<void> _vote(Story story, String action) async {
+    final session = await _checkLoginAndLoadStories();
+    if (!isLoggedIn || session.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Login required to vote')));
+      return;
+    }
+
+    // 1. Get fresh CSRF token
+    final token = await _getCsrfToken(story.id);
+    if (token == null) {
+      print('Failed to get CSRF token');
+      return;
+    }
+
+    print('Voting $action on ${story.id} | Token: $token');
+
+    try {
+      final url = Uri.parse(
+        'https://news.ycombinator.com/vote?id=${story.id}&how=$action&auth=$token&goto=item?id=${story.id}',
+      );
+
+      final res = await http.get(
+        url,
+        headers: {'Cookie': session, 'User-Agent': 'HN-Flutter/1.0'},
+      );
+
+      print(
+        'Vote response: ${res.statusCode} | Location: ${res.headers['location']}',
+      );
+
+      if (res.statusCode == 302) {
+        // Success! HN redirects on valid vote
+        setState(() {
+          story.score += action == 'up' ? 1 : -1; // Optimistic UI update
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${action.toUpperCase()}d ${story.title}')),
+        );
+      }
+    } catch (e) {
+      print('Vote error: $e');
     }
   }
 
