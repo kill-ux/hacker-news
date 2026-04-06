@@ -22,7 +22,6 @@ class _HomePageState extends State<HomePage> {
   int loadOffset = 20;
   bool hasMore = true;
   bool isLoadingMore = false;
-  bool apiLoaded = false;
 
   final _baseUrl = "https://news.ycombinator.com";
   // List<dynamic> storyIds = [];
@@ -33,7 +32,7 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
 
-    _loadStories();
+    _loadStories(apiLoaded: false);
     // _checkLoginAndLoadStories();
   }
 
@@ -88,7 +87,10 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadStories({bool loadMore = false}) async {
+  Future<void> _loadStories({
+    bool loadMore = false,
+    bool apiLoaded = true,
+  }) async {
     try {
       if (loadMore) {
         setState(() => isLoadingMore = true);
@@ -98,6 +100,7 @@ class _HomePageState extends State<HomePage> {
 
       // API CALL ONLY ON FIRST LOAD (not loadMore)
       if (!apiLoaded) {
+        print("search in api");
         final url = Uri.parse(
           'https://hacker-news.firebaseio.com/v0/newstories.json',
         );
@@ -105,7 +108,8 @@ class _HomePageState extends State<HomePage> {
 
         if (res.statusCode == 200) {
           storyIds = json.decode(res.body); // Load ONCE
-          apiLoaded = true;
+          hasMore = true;
+          isLoadingMore = false;
         }
       }
 
@@ -344,7 +348,7 @@ class _HomePageState extends State<HomePage> {
             backgroundColor: Colors.green,
           ),
         );
-        _loadStories(); // Refresh list
+        _loadStories(apiLoaded: false); // Refresh list
       }
     } catch (e) {
       print('Submit error: $e');
@@ -383,7 +387,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadMoreStories() async => _loadStories(loadMore: true);
 
-
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.grey[900],
@@ -398,7 +401,9 @@ class _HomePageState extends State<HomePage> {
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh),
-          onPressed: isLoading ? null : () => _loadStories(loadMore: false),
+          onPressed: isLoading
+              ? null
+              : () => _loadStories(loadMore: false, apiLoaded: false),
         ),
         IconButton(
           icon: const Icon(Icons.post_add),
@@ -445,7 +450,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                       const SizedBox(height: 8),
                       ElevatedButton.icon(
-                        onPressed: _loadStories,
+                        onPressed: () => _loadStories(apiLoaded: false),
                         icon: const Icon(Icons.refresh),
                         label: const Text('Retry'),
                         style: ElevatedButton.styleFrom(
@@ -457,7 +462,8 @@ class _HomePageState extends State<HomePage> {
                 )
               : RefreshIndicator(
                   color: Colors.orange,
-                  onRefresh: () => _loadStories(loadMore: false),
+                  onRefresh: () =>
+                      _loadStories(loadMore: false, apiLoaded: false),
                   child: ListView.builder(
                     padding: const EdgeInsets.all(12),
                     itemCount: stories.length,
