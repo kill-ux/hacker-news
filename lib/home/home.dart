@@ -22,6 +22,7 @@ class _HomePageState extends State<HomePage> {
   int loadOffset = 20;
   bool hasMore = true;
   bool isLoadingMore = false;
+  String username = '';
 
   final _baseUrl = "https://news.ycombinator.com";
   // List<dynamic> storyIds = [];
@@ -87,11 +88,23 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _getUsername() async {
+    final prefs = await SharedPreferences.getInstance();
+    final user = prefs.getString('username') ?? '';
+
+    if (username.isNotEmpty) {
+      setState(() {
+        username = user;
+      });
+    }
+  }
+
   Future<void> _loadStories({
     bool loadMore = false,
     bool apiLoaded = true,
   }) async {
     try {
+      _getUsername();
       if (loadMore) {
         setState(() => isLoadingMore = true);
       } else {
@@ -215,9 +228,6 @@ class _HomePageState extends State<HomePage> {
       final res = await http.get(url, headers: {'Cookie': session});
 
       if (res.statusCode == 302 || res.statusCode == 200) {
-        setState(() {
-          story.score += action == 'up' ? 1 : -1;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${action.toUpperCase()}d ${story.title}')),
         );
@@ -316,7 +326,7 @@ class _HomePageState extends State<HomePage> {
       final regExp = RegExp(r'name="fnid" value="([^"]+)"');
       final match = regExp.firstMatch(res.body);
 
-      if (match == null) return; // Could not find security token
+      if (match == null) return;
       final String fnid = match.group(1)!;
 
       print('CSRF Token: $fnid');
@@ -348,13 +358,60 @@ class _HomePageState extends State<HomePage> {
             backgroundColor: Colors.green,
           ),
         );
-        _loadStories(apiLoaded: false); // Refresh list
+        // NeW
+        final prefs = await SharedPreferences.getInstance();
+        final username = prefs.getString('username') ?? '';
+
+        if (username.isNotEmpty) {
+          await _fetchAndInsertRecentPost(username, session);
+        } else {
+          _loadStories(apiLoaded: false);
+        }
+
+        // _loadStories(apiLoaded: false);
       }
     } catch (e) {
       print('Submit error: $e');
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Submit failed: $e')));
+    }
+  }
+
+  Future<void> _fetchAndInsertRecentPost(
+    String username,
+    String session,
+  ) async {
+    print("_fetchAndInsertRecentPost");
+    final url = Uri.parse(
+      'https://news.ycombinator.com/submitted?id=$username',
+    );
+    final res = await http.get(url, headers: {'Cookie': session});
+    if (res.statusCode == 200) {
+      // item?id=47672610
+
+      final regExp = RegExp(r'item\?id=(\d+)');
+      final match = regExp.firstMatch(res.body);
+      print("match");
+      if (match != null) {
+        final String newIdStr = match.group(1)!;
+        print("idddddddddddddddddddd =>");
+        print(newIdStr);
+        final int newId = int.parse(newIdStr);
+
+        // Fetch the full story details from the API
+        final newStory = await _getStorie(newId);
+
+        setState(() {
+          // Add to the ID list and the actual Story list at the very top
+          storyIds.insert(0, newId);
+          stories.insert(0, newStory);
+        });
+
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('New post synced!')));
+      }
     }
   }
 
@@ -383,6 +440,75 @@ class _HomePageState extends State<HomePage> {
     );
 
     print('👋 Logged out');
+  }
+
+  Future<void> _confirmDelete(Story story) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Post?"),
+        content: Text("Are you sure you want to delete '${story.title}'?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      _deletePost(story);
+    }
+  }
+
+  Future<void> _deletePost(Story story) async {
+    final session = await _checkLoginAndLoadStories();
+    if (session.isEmpty) return;
+
+    try {
+      // 1. Visit the item page to find the delete link/token
+      final itemUrl = Uri.parse(
+        "https://news.ycombinator.com/item?id=${story.id}",
+      );
+      final res = await http.get(itemUrl, headers: {'Cookie': session});
+
+      // 2. Look for the delete link pattern: x?id=ID&auth=TOKEN&how=del
+      // Regex looking for the 'auth' token specifically for the 'del' action
+      final regExp = RegExp(r'how=del&amp;auth=([a-z0-9]+)');
+      final match = regExp.firstMatch(res.body);
+
+      if (match == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Too late to delete or no permission.")),
+        );
+        return;
+      }
+
+      final String token = match.group(1)!;
+
+      // 3. Execute the deletion
+      final delUrl = Uri.parse(
+        "https://news.ycombinator.com/x?id=${story.id}&how=del&auth=$token&goto=news",
+      );
+
+      final delRes = await http.get(delUrl, headers: {'Cookie': session});
+
+      if (delRes.statusCode == 302 || delRes.statusCode == 200) {
+        setState(() {
+          stories.removeWhere((s) => s.id == story.id);
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Post deleted")));
+      }
+    } catch (e) {
+      print("Delete error: $e");
+    }
   }
 
   Future<void> _loadMoreStories() async => _loadStories(loadMore: true);
@@ -521,6 +647,17 @@ class _HomePageState extends State<HomePage> {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
                                         children: [
+                                          if (story.by ==
+                                              username) // Only show for own posts
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.delete_outline,
+                                                size: 18,
+                                                color: Colors.redAccent,
+                                              ),
+                                              onPressed: () =>
+                                                  _confirmDelete(story),
+                                            ),
                                           InkWell(
                                             onTap: () => Navigator.push(
                                               context,
@@ -541,6 +678,7 @@ class _HomePageState extends State<HomePage> {
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
+                                          SizedBox(height: 20),
                                           if (story.url.isNotEmpty) ...[
                                             const SizedBox(height: 4),
                                             GestureDetector(
@@ -551,14 +689,21 @@ class _HomePageState extends State<HomePage> {
                                                       WebViewPage(story.url),
                                                 ),
                                               ),
-                                              child: Text(
-                                                "(${story.url})",
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.grey[400],
+                                              child: Container(
+                                                padding: EdgeInsets.all(4),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black12,
                                                 ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
+                                                child: Text(
+                                                  "(${story.url})",
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.grey[400],
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
                                               ),
                                             ),
                                           ],
@@ -595,12 +740,6 @@ class _HomePageState extends State<HomePage> {
                                         ),
                                       ),
                                     ),
-                                    if (story.url.isNotEmpty)
-                                      Icon(
-                                        Icons.launch,
-                                        size: 18,
-                                        color: Colors.grey[400],
-                                      ),
                                   ],
                                 ),
                               ],
